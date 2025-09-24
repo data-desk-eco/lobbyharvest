@@ -3,7 +3,11 @@ import csv
 import json
 from pathlib import Path
 from typing import Optional, List, Dict
-from src.scrapers import lobbyfacts, uk_lobbying, australia_lobbying, fara
+from src.scrapers import (
+    lobbyfacts, uk_lobbying, australia_lobbying, fara,
+    uk_orcl, french_hatvp, austrian_lobbying, cyprus_lobbying,
+    italian_lobbying, au_foreign_influence
+)
 
 
 @click.group()
@@ -154,6 +158,216 @@ def fara_scrape(firm_name, output, format):
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         raise click.ClickException(str(e))
+
+
+@cli.command()
+@click.argument('firm_name')
+@click.option('--output', '-o', default='output.csv', help='Output file path')
+@click.option('--format', '-f', type=click.Choice(['csv', 'json']), default='csv', help='Output format')
+def uk_orcl_register(firm_name, output, format):
+    """Scrape UK Office of the Registrar of Consultant Lobbyists"""
+    click.echo(f"Scraping UK ORCL for: {firm_name}")
+
+    try:
+        results = uk_orcl.scrape(firm_name)
+
+        if not results:
+            click.echo(f"No results found for {firm_name}")
+            return
+
+        click.echo(f"Found {len(results)} client records")
+
+        if format == 'csv':
+            with open(output, 'w', newline='') as f:
+                if results:
+                    fieldnames = ['firm_name', 'firm_registration_number', 'client_name',
+                                  'client_registration_number', 'start_date', 'end_date']
+                    writer = csv.DictWriter(f, fieldnames=fieldnames)
+                    writer.writeheader()
+                    writer.writerows(results)
+        else:
+            with open(output, 'w') as f:
+                json.dump(results, f, indent=2, default=str)
+
+        click.echo(f"Results saved to {output}")
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+
+
+@cli.command()
+@click.argument('firm_name')
+@click.option('--output', '-o', default='output.csv', help='Output file path')
+@click.option('--format', '-f', type=click.Choice(['csv', 'json']), default='csv', help='Output format')
+def french_hatvp_register(firm_name, output, format):
+    """Scrape French HATVP Register"""
+    click.echo(f"Scraping French HATVP for: {firm_name}")
+
+    try:
+        results = french_hatvp.scrape(firm_name)
+
+        if not results:
+            click.echo(f"No results found for {firm_name}")
+            return
+
+        click.echo(f"Found {len(results)} client records")
+
+        if format == 'csv':
+            with open(output, 'w', newline='') as f:
+                if results:
+                    fieldnames = ['firm_name', 'firm_registration_number', 'client_name',
+                                  'client_registration_number', 'start_date', 'end_date']
+                    writer = csv.DictWriter(f, fieldnames=fieldnames)
+                    writer.writeheader()
+                    writer.writerows(results)
+        else:
+            with open(output, 'w') as f:
+                json.dump(results, f, indent=2, default=str)
+
+        click.echo(f"Results saved to {output}")
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+
+
+@cli.command()
+@click.argument('firm_name')
+@click.option('--output', '-o', default='output.csv', help='Output file path')
+@click.option('--format', '-f', type=click.Choice(['csv', 'json']), default='csv', help='Output format')
+def austrian_register(firm_name, output, format):
+    """Scrape Austrian Lobbying Register"""
+    click.echo(f"Scraping Austrian Register for: {firm_name}")
+
+    try:
+        results = austrian_lobbying.scrape(firm_name)
+
+        if not results:
+            click.echo(f"No results found for {firm_name}")
+            return
+
+        click.echo(f"Found {len(results)} client records")
+
+        if format == 'csv':
+            with open(output, 'w', newline='') as f:
+                if results:
+                    fieldnames = ['firm_name', 'firm_registration_number', 'client_name',
+                                  'client_registration_number', 'start_date', 'end_date']
+                    writer = csv.DictWriter(f, fieldnames=fieldnames)
+                    writer.writeheader()
+                    writer.writerows(results)
+        else:
+            with open(output, 'w') as f:
+                json.dump(results, f, indent=2, default=str)
+
+        click.echo(f"Results saved to {output}")
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+
+
+@cli.command()
+@click.argument('firm_name')
+@click.option('--output', '-o', default='output.csv', help='Output file path')
+@click.option('--format', '-f', type=click.Choice(['csv', 'json']), default='csv', help='Output format')
+def cyprus_register(firm_name, output, format):
+    """Scrape Cyprus Lobbying Register"""
+    click.echo(f"Scraping Cyprus Register for: {firm_name}")
+
+    try:
+        results = cyprus_lobbying.scrape(firm_name)
+
+        if not results:
+            click.echo(f"No results found for {firm_name}")
+            return
+
+        click.echo(f"Found {len(results)} client records")
+
+        if format == 'csv':
+            with open(output, 'w', newline='') as f:
+                if results:
+                    fieldnames = ['firm_name', 'firm_registration_number', 'client_name',
+                                  'client_registration_number', 'start_date', 'end_date']
+                    writer = csv.DictWriter(f, fieldnames=fieldnames)
+                    writer.writeheader()
+                    writer.writerows(results)
+        else:
+            with open(output, 'w') as f:
+                json.dump(results, f, indent=2, default=str)
+
+        click.echo(f"Results saved to {output}")
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+
+
+@cli.command()
+@click.argument('firm_name')
+@click.option('--output', '-o', default='output.csv', help='Output file path')
+@click.option('--format', '-f', type=click.Choice(['csv', 'json']), default='csv', help='Output format')
+def italian_register(firm_name, output, format):
+    """Scrape Italian Lobbying Register"""
+    click.echo(f"Scraping Italian Register for: {firm_name}")
+
+    try:
+        results = italian_lobbying.scrape(firm_name)
+
+        if not results:
+            click.echo(f"No results found for {firm_name}")
+            return
+
+        click.echo(f"Found {len(results)} client records")
+
+        if format == 'csv':
+            with open(output, 'w', newline='') as f:
+                if results:
+                    fieldnames = ['firm_name', 'firm_registration_number', 'client_name',
+                                  'client_registration_number', 'start_date', 'end_date']
+                    writer = csv.DictWriter(f, fieldnames=fieldnames)
+                    writer.writeheader()
+                    writer.writerows(results)
+        else:
+            with open(output, 'w') as f:
+                json.dump(results, f, indent=2, default=str)
+
+        click.echo(f"Results saved to {output}")
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+
+
+@cli.command()
+@click.argument('firm_name')
+@click.option('--output', '-o', default='output.csv', help='Output file path')
+@click.option('--format', '-f', type=click.Choice(['csv', 'json']), default='csv', help='Output format')
+def au_foreign_influence_register(firm_name, output, format):
+    """Scrape Australian Foreign Influence Transparency Scheme"""
+    click.echo(f"Scraping AU Foreign Influence Register for: {firm_name}")
+
+    try:
+        results = au_foreign_influence.scrape(firm_name)
+
+        if not results:
+            click.echo(f"No results found for {firm_name}")
+            return
+
+        click.echo(f"Found {len(results)} client records")
+
+        if format == 'csv':
+            with open(output, 'w', newline='') as f:
+                if results:
+                    fieldnames = ['firm_name', 'firm_registration_number', 'client_name',
+                                  'client_registration_number', 'start_date', 'end_date']
+                    writer = csv.DictWriter(f, fieldnames=fieldnames)
+                    writer.writeheader()
+                    writer.writerows(results)
+        else:
+            with open(output, 'w') as f:
+                json.dump(results, f, indent=2, default=str)
+
+        click.echo(f"Results saved to {output}")
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
 
 
 def main():
