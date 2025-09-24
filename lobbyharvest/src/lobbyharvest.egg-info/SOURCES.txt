@@ -1,0 +1,9 @@
+pyproject.toml
+src/__init__.py
+src/lobbyharvest.egg-info/PKG-INFO
+src/lobbyharvest.egg-info/SOURCES.txt
+src/lobbyharvest.egg-info/dependency_links.txt
+src/lobbyharvest.egg-info/requires.txt
+src/lobbyharvest.egg-info/top_level.txt
+src/scrapers/__init__.py
+src/scrapers/australia_lobbying.py

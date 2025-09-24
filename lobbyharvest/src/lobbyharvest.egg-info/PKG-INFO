@@ -1,0 +1,7 @@
+Metadata-Version: 2.4
+Name: lobbyharvest
+Version: 0.1.0
+Summary: Add your description here
+Requires-Python: >=3.13
+Requires-Dist: click>=8.3.0
+Requires-Dist: playwright>=1.55.0
