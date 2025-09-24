@@ -1,2 +1,6 @@
+beautifulsoup4>=4.13.5
 click>=8.3.0
+httpx>=0.28.1
+lxml>=6.0.2
 playwright>=1.55.0
+requests>=2.32.5

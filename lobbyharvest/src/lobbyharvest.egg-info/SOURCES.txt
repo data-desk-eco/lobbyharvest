@@ -1,9 +1,17 @@
 pyproject.toml
 src/__init__.py
+src/aggregator.py
 src/lobbyharvest.egg-info/PKG-INFO
 src/lobbyharvest.egg-info/SOURCES.txt
 src/lobbyharvest.egg-info/dependency_links.txt
+src/lobbyharvest.egg-info/entry_points.txt
 src/lobbyharvest.egg-info/requires.txt
 src/lobbyharvest.egg-info/top_level.txt
 src/scrapers/__init__.py
 src/scrapers/australia_lobbying.py
+src/scrapers/fara.py
+src/scrapers/lobbyfacts.py
+src/scrapers/uk_lobbying.py
+src/utils/__init__.py
+src/utils/browser.py
+src/utils/normalize.py

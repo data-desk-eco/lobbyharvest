@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import List, Dict, Optional
 from playwright.sync_api import sync_playwright, Page
 import click
+from ..utils.browser import ensure_display, get_browser_args
 
 def extract_rid_from_url(url: str) -> Optional[str]:
     match = re.search(r'rid=([^&]+)', url)
@@ -31,15 +32,26 @@ def search_firm(page: Page, firm_name: str) -> Optional[str]:
 def scrape_lobbyfacts(firm_name: str, url: Optional[str] = None) -> List[Dict[str, str]]:
     clients = []
 
+    # Ensure display for headless environment
+    ensure_display()
+
     with sync_playwright() as p:
         try:
-            browser = p.chromium.launch(headless=True)
+            browser_args = get_browser_args(headless=True)
+            browser = p.chromium.launch(**browser_args)
         except Exception as e:
             if "Host system is missing dependencies" in str(e):
-                click.echo("Browser dependencies missing. Please run: sudo playwright install-deps", err=True)
-                click.echo("Or install manually: sudo apt-get install libgbm1", err=True)
-                return clients
-            raise
+                click.echo("Browser dependencies missing. Trying with Xvfb...", err=True)
+                # Try again with virtual display
+                ensure_display()
+                browser_args = get_browser_args(headless=False)
+                try:
+                    browser = p.chromium.launch(**browser_args)
+                except Exception as e2:
+                    click.echo(f"Failed to launch browser: {e2}", err=True)
+                    return clients
+            else:
+                raise
 
         page = browser.new_page()
 

@@ -3,5 +3,9 @@ Name: lobbyharvest
 Version: 0.1.0
 Summary: Add your description here
 Requires-Python: >=3.13
+Requires-Dist: beautifulsoup4>=4.13.5
 Requires-Dist: click>=8.3.0
+Requires-Dist: httpx>=0.28.1
+Requires-Dist: lxml>=6.0.2
 Requires-Dist: playwright>=1.55.0
+Requires-Dist: requests>=2.32.5
