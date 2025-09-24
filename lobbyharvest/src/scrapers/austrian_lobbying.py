@@ -22,56 +22,37 @@ async def scrape_async(firm_name: str) -> List[Dict[str, Optional[str]]]:
         List of client dictionaries
     """
     clients = []
-    # The main page redirects to the actual search form
-    base_url = "http://lobbyreg.justiz.gv.at/edikte/ir/iredi18.nsf/Suche!Openform"
+    # Navigate directly to the main page which redirects to the search form
+    base_url = "https://lobbyreg.justiz.gv.at/"
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
 
         try:
-            # Navigate to the search form
-            await page.goto(base_url, wait_until="networkidle", timeout=15000)
+            # Navigate to the site - it will redirect to the search form
+            await page.goto(base_url, wait_until="networkidle", timeout=30000)
 
-            # Look for search functionality
-            # Try to find search input field (may be labeled in German)
-            search_input = None
-            for selector in ['input[type="search"]', 'input[name*="such"]', 'input[name*="search"]',
-                           'input[placeholder*="Such"]', 'input[placeholder*="search"]']:
-                try:
-                    element = await page.wait_for_selector(selector, timeout=2000)
-                    if element:
-                        search_input = element
-                        break
-                except:
-                    continue
-
-            if not search_input:
-                # Try to find any text input that might be for search
-                inputs = await page.query_selector_all('input[type="text"]')
-                if inputs:
-                    search_input = inputs[0]
+            # The search input has id="FT" and name="FT"
+            search_input = await page.wait_for_selector('#FT', timeout=5000)
 
             if search_input:
-                # Enter search term
+                # Fill the search field (fill() automatically clears existing content)
                 await search_input.fill(firm_name)
 
-                # Try to submit search (look for button with German or English text)
-                search_button = None
-                for selector in ['button[type="submit"]', 'button:has-text("Suchen")',
-                               'button:has-text("Search")', 'input[type="submit"]']:
-                    try:
-                        btn = await page.wait_for_selector(selector, timeout=2000)
-                        if btn:
-                            search_button = btn
-                            break
-                    except:
-                        continue
+                # Find and click the "Suchen" (Search) button
+                # The button has value="   Suchen   "
+                search_button = await page.query_selector('input[type="submit"][value*="Suchen"]')
 
                 if search_button:
-                    await search_button.click()
+                    # Try to click the button using JavaScript to avoid viewport issues
+                    try:
+                        await page.evaluate('(button) => button.click()', search_button)
+                    except:
+                        # Fallback to normal click
+                        await search_button.click()
                 else:
-                    # Try pressing Enter
+                    # Fallback: press Enter
                     await search_input.press('Enter')
 
                 # Wait for results to load
@@ -257,55 +238,37 @@ def scrape(firm_name: str) -> List[Dict[str, Optional[str]]]:
         List of client dictionaries
     """
     clients = []
-    # The main page redirects to the actual search form
-    base_url = "http://lobbyreg.justiz.gv.at/edikte/ir/iredi18.nsf/Suche!Openform"
+    # Navigate directly to the main page which redirects to the search form
+    base_url = "https://lobbyreg.justiz.gv.at/"
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
 
         try:
-            # Navigate to the search form
-            page.goto(base_url, wait_until="networkidle", timeout=15000)
+            # Navigate to the site - it will redirect to the search form
+            page.goto(base_url, wait_until="networkidle", timeout=30000)
 
-            # Look for search functionality
-            search_input = None
-            for selector in ['input[type="search"]', 'input[name*="such"]', 'input[name*="search"]',
-                           'input[placeholder*="Such"]', 'input[placeholder*="search"]']:
-                try:
-                    element = page.wait_for_selector(selector, timeout=2000)
-                    if element:
-                        search_input = element
-                        break
-                except:
-                    continue
-
-            if not search_input:
-                # Try to find any text input that might be for search
-                inputs = page.query_selector_all('input[type="text"]')
-                if inputs:
-                    search_input = inputs[0]
+            # The search input has id="FT" and name="FT"
+            search_input = page.wait_for_selector('#FT', timeout=5000)
 
             if search_input:
-                # Enter search term
+                # Fill the search field (fill() automatically clears existing content)
                 search_input.fill(firm_name)
 
-                # Try to submit search
-                search_button = None
-                for selector in ['button[type="submit"]', 'button:has-text("Suchen")',
-                               'button:has-text("Search")', 'input[type="submit"]']:
-                    try:
-                        btn = page.wait_for_selector(selector, timeout=2000)
-                        if btn:
-                            search_button = btn
-                            break
-                    except:
-                        continue
+                # Find and click the "Suchen" (Search) button
+                # The button has value="   Suchen   "
+                search_button = page.query_selector('input[type="submit"][value*="Suchen"]')
 
                 if search_button:
-                    search_button.click()
+                    # Try to click the button using JavaScript to avoid viewport issues
+                    try:
+                        page.evaluate('(button) => button.click()', search_button)
+                    except:
+                        # Fallback to normal click
+                        search_button.click()
                 else:
-                    # Try pressing Enter
+                    # Fallback: press Enter
                     search_input.press('Enter')
 
                 # Wait for results to load

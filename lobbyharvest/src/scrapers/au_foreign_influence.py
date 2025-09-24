@@ -26,32 +26,50 @@ async def scrape_async(firm_name: str) -> List[Dict[str, Optional[str]]]:
         page = await browser.new_page()
 
         try:
-            # Navigate to the transparency register
-            await page.goto('https://transparency.ag.gov.au/', wait_until='networkidle')
-
-            # Click on search/browse registrants
-            search_link = page.locator('text=/.*Search.*registrant.*/i').or_(
-                page.locator('text=/.*Browse.*registrant.*/i')
-            ).or_(
-                page.locator('a:has-text("Registrants")')
-            ).first
-
-            if await search_link.count() > 0:
-                await search_link.click()
-                await page.wait_for_load_state('networkidle')
-
-            # Search for the firm
-            search_input = page.locator('input[type="search"], input[type="text"][placeholder*="Search"], input[name*="search"], #search')
-            if await search_input.count() > 0:
-                await search_input.first.fill(firm_name)
-                await page.keyboard.press('Enter')
-                await page.wait_for_load_state('networkidle')
-
-            # Wait for results
+            # Navigate directly to the registrants page
+            await page.goto('https://transparency.ag.gov.au/Registrants', wait_until='networkidle')
             await page.wait_for_timeout(2000)
 
-            # Look for result links with the firm name
-            result_links = await page.locator(f'a:has-text("{firm_name}")').all()
+            # Search for the firm
+            search_selectors = [
+                'input[type="search"]',
+                'input[placeholder*="Search"]',
+                'input[placeholder*="search"]',
+                'input[name*="search"]',
+                'input[id*="search"]',
+                'input[type="text"]'
+            ]
+
+            search_input = None
+            for selector in search_selectors:
+                elem = page.locator(selector).first
+                if await elem.count() > 0:
+                    search_input = elem
+                    logger.info(f"Found search input with selector: {selector}")
+                    break
+
+            if search_input:
+                await search_input.fill(firm_name)
+                await page.keyboard.press('Enter')
+                await page.wait_for_load_state('networkidle')
+                await page.wait_for_timeout(2000)
+            else:
+                logger.warning("Could not find search input")
+
+            # Look for result links with the firm name - try multiple approaches
+            result_links = []
+
+            # Try exact match first
+            exact_links = await page.locator(f'a:has-text("{firm_name}")').all()
+            result_links.extend(exact_links)
+
+            # If no exact matches, try case-insensitive partial match
+            if not result_links:
+                all_links = await page.locator('a').all()
+                for link in all_links:
+                    link_text = await link.text_content()
+                    if link_text and firm_name.lower() in link_text.lower():
+                        result_links.append(link)
 
             for link in result_links[:3]:  # Process first 3 matches
                 try:
@@ -220,32 +238,50 @@ def scrape(firm_name: str) -> List[Dict[str, Optional[str]]]:
         page = browser.new_page()
 
         try:
-            # Navigate to the transparency register
-            page.goto('https://transparency.ag.gov.au/', wait_until='networkidle')
-
-            # Click on search/browse registrants
-            search_link = page.locator('text=/.*Search.*registrant.*/i').or_(
-                page.locator('text=/.*Browse.*registrant.*/i')
-            ).or_(
-                page.locator('a:has-text("Registrants")')
-            ).first
-
-            if search_link.count() > 0:
-                search_link.click()
-                page.wait_for_load_state('networkidle')
-
-            # Search for the firm
-            search_input = page.locator('input[type="search"], input[type="text"][placeholder*="Search"], input[name*="search"], #search')
-            if search_input.count() > 0:
-                search_input.first.fill(firm_name)
-                page.keyboard.press('Enter')
-                page.wait_for_load_state('networkidle')
-
-            # Wait for results
+            # Navigate directly to the registrants page
+            page.goto('https://transparency.ag.gov.au/Registrants', wait_until='networkidle')
             page.wait_for_timeout(2000)
 
-            # Look for result links with the firm name
-            result_links = page.locator(f'a:has-text("{firm_name}")').all()
+            # Search for the firm
+            search_selectors = [
+                'input[type="search"]',
+                'input[placeholder*="Search"]',
+                'input[placeholder*="search"]',
+                'input[name*="search"]',
+                'input[id*="search"]',
+                'input[type="text"]'
+            ]
+
+            search_input = None
+            for selector in search_selectors:
+                elem = page.locator(selector).first
+                if elem.count() > 0:
+                    search_input = elem
+                    logger.info(f"Found search input with selector: {selector}")
+                    break
+
+            if search_input:
+                search_input.fill(firm_name)
+                page.keyboard.press('Enter')
+                page.wait_for_load_state('networkidle')
+                page.wait_for_timeout(2000)
+            else:
+                logger.warning("Could not find search input")
+
+            # Look for result links with the firm name - try multiple approaches
+            result_links = []
+
+            # Try exact match first
+            exact_links = page.locator(f'a:has-text("{firm_name}")').all()
+            result_links.extend(exact_links)
+
+            # If no exact matches, try case-insensitive partial match
+            if not result_links:
+                all_links = page.locator('a').all()
+                for link in all_links:
+                    link_text = link.text_content()
+                    if link_text and firm_name.lower() in link_text.lower():
+                        result_links.append(link)
 
             for link in result_links[:3]:  # Process first 3 matches
                 try:

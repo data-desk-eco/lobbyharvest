@@ -33,61 +33,37 @@ async def scrape_async(firm_name: str) -> List[Dict[str, Optional[str]]]:
         page = await context.new_page()
 
         try:
-            # Navigate to the search page
-            search_url = f"{base_url}/sito/ricerca-avanzata.html"
-            await page.goto(search_url, wait_until='networkidle', timeout=30000)
+            # Navigate to the registry page which lists all firms
+            registry_url = f"{base_url}/sito/registro.html"
+            await page.goto(registry_url, wait_until='networkidle', timeout=30000)
 
-            # Try the main listing page as fallback
-            listing_url = f"{base_url}/sito/elenco-categorie.html"
-
-            # Search for the firm
-            search_input = await page.query_selector('input[type="text"], input[name*="search"], input[name*="ricerca"]')
-            if search_input:
-                await search_input.fill(firm_name)
-                await page.keyboard.press('Enter')
-                await page.wait_for_load_state('networkidle', timeout=10000)
-            else:
-                # Try navigating directly to listing page
-                await page.goto(listing_url, wait_until='networkidle', timeout=30000)
-
-            # Look for links containing the firm name
-            links = await page.query_selector_all('a')
+            # Look for the firm in the registry
+            # Try exact match first, then partial match
             firm_found = False
+            firm_href = None
 
-            for link in links:
+            # Try to find firm link with exact or partial match
+            firm_links = await page.query_selector_all('a[href*="legal_"]')
+
+            for link in firm_links:
                 text = await link.text_content()
-                if text and firm_name.lower() in text.lower():
-                    href = await link.get_attribute('href')
-                    if href and 'scheda' in href:
-                        # Found a firm detail page
-                        if not href.startswith('http'):
-                            href = base_url + '/' + href.lstrip('/')
-
-                        # Navigate to firm detail page
-                        await page.goto(href, wait_until='networkidle', timeout=30000)
-                        firm_found = True
-                        break
-
-            if not firm_found:
-                # Try direct URL patterns
-                # Example: /sito/legal_353/scheda-persona-giuridica.html
-                direct_urls = [
-                    f"{base_url}/sito/legal_353/scheda-persona-giuridica.html",
-                    f"{base_url}/sito/scheda-persona-giuridica.html"
-                ]
-
-                for url in direct_urls:
-                    try:
-                        await page.goto(url, wait_until='networkidle', timeout=30000)
-                        # Check if page contains firm name
-                        content = await page.content()
-                        if firm_name.lower() in content.lower():
+                if text:
+                    text = text.strip()
+                    # Check for match (case insensitive)
+                    if firm_name.lower() in text.lower() or text.lower() in firm_name.lower():
+                        firm_href = await link.get_attribute('href')
+                        if firm_href:
                             firm_found = True
+                            logger.info(f"Found firm '{text}' at {firm_href}")
                             break
-                    except:
-                        continue
 
-            if firm_found:
+            if firm_found and firm_href:
+                # Navigate to the firm's detail page
+                if not firm_href.startswith('http'):
+                    firm_href = base_url + firm_href
+
+                await page.goto(firm_href, wait_until='networkidle', timeout=30000)
+
                 # Extract client information from the detail page
                 clients = await extract_clients_from_page(page, firm_name)
 
@@ -107,105 +83,68 @@ async def extract_clients_from_page(page, firm_name: str) -> List[Dict[str, Opti
     clients = []
 
     try:
-        # Look for sections containing client information
-        # Italian terms: "clienti", "rappresentati", "soggetti rappresentati"
-        client_sections = await page.query_selector_all(
-            'section:has-text("clienti"), '
-            'section:has-text("rappresentati"), '
-            'div:has-text("soggetti rappresentati"), '
-            'table'
-        )
+        # Get page content to check for client sections
+        content = await page.content()
 
-        # Also check for tables containing client data
-        tables = await page.query_selector_all('table')
-        for table in tables:
-            rows = await table.query_selector_all('tr')
-            for row in rows:
-                cells = await row.query_selector_all('td, th')
-                if len(cells) >= 2:
-                    # Extract text from cells
-                    cell_texts = []
-                    for cell in cells:
-                        text = await cell.text_content()
-                        if text:
-                            cell_texts.append(text.strip())
+        # Look for company names with Italian legal suffixes
+        import re
 
-                    # Look for client-like data
-                    if len(cell_texts) >= 2:
-                        potential_client = cell_texts[0]
-                        # Skip header rows
-                        if not any(header in potential_client.lower() for header in ['cliente', 'soggetto', 'denominazione', 'nome']):
-                            # Extract dates if present
-                            start_date = None
-                            end_date = None
+        # Italian company patterns
+        company_patterns = [
+            r'\b[\w\s]+\s+S\.p\.A\.?\b',
+            r'\b[\w\s]+\s+S\.r\.l\.?\b',
+            r'\b[\w\s]+\s+SPA\b',
+            r'\b[\w\s]+\s+SRL\b',
+            r'\b[\w\s]+\s+S\.R\.L\.?\b',
+            r'\b[\w\s]+\s+S\.P\.A\.?\b',
+            r'\b[\w\s]+\s+S\.c\.a r\.l\.?\b',
+            r'\b[\w\s]+\s+S\.n\.c\.?\b',
+            r'\b[\w\s]+\s+S\.a\.s\.?\b'
+        ]
 
-                            for text in cell_texts[1:]:
-                                # Look for date patterns (DD/MM/YYYY or YYYY)
-                                if '/' in text or text.isdigit():
-                                    if not start_date:
-                                        start_date = parse_italian_date(text)
-                                    elif not end_date:
-                                        end_date = parse_italian_date(text)
+        found_companies = set()
 
-                            if potential_client and potential_client != firm_name:
-                                clients.append({
-                                    'firm_name': firm_name,
-                                    'firm_registration_number': None,
-                                    'client_name': potential_client,
-                                    'client_registration_number': None,
-                                    'start_date': start_date,
-                                    'end_date': end_date
-                                })
+        # Extract companies from content
+        for pattern in company_patterns:
+            matches = re.findall(pattern, content, re.IGNORECASE)
+            for match in matches:
+                # Clean up the match
+                match = match.strip()
+                # Skip if it's the firm itself
+                if firm_name.lower() not in match.lower() and match.lower() not in firm_name.lower():
+                    # Skip common non-client entries
+                    if not any(skip in match.lower() for skip in ['camera', 'registro', 'cookie', 'privacy']):
+                        found_companies.add(match)
 
-        # Look for lists of clients
-        lists = await page.query_selector_all('ul li, ol li')
-        for item in lists:
-            text = await item.text_content()
-            if text and text.strip() and text.strip() != firm_name:
-                # Check if this looks like a client entry
-                if not any(skip in text.lower() for skip in ['cookie', 'privacy', 'menu', 'home']):
-                    clients.append({
-                        'firm_name': firm_name,
-                        'firm_registration_number': None,
-                        'client_name': text.strip(),
-                        'client_registration_number': None,
-                        'start_date': None,
-                        'end_date': None
-                    })
+        # Also look for card-div elements which may contain client info
+        card_divs = await page.query_selector_all('.card-div')
 
-        # Look for divs or sections with client information
-        client_divs = await page.query_selector_all(
-            'div.client, div.cliente, div.rappresentato, '
-            'article.client, article.cliente'
-        )
+        for card in card_divs:
+            text = await card.text_content()
+            if text:
+                text = text.strip()
+                # Skip the firm's own info card and category cards
+                if firm_name.lower() not in text.lower():
+                    if not any(skip in text.lower() for skip in ['categoria:', 'sede:', 'telefono:', 'email:', 'pec:', 'soggetti rappresentati']):
+                        # Look for company patterns in this card
+                        for pattern in company_patterns:
+                            matches = re.findall(pattern, text, re.IGNORECASE)
+                            for match in matches:
+                                match = match.strip()
+                                if match not in found_companies:
+                                    found_companies.add(match)
 
-        for div in client_divs:
-            name_elem = await div.query_selector('h3, h4, strong, .name, .nome')
-            if name_elem:
-                client_name = await name_elem.text_content()
-                if client_name and client_name.strip() != firm_name:
-                    # Look for dates in the same div
-                    date_text = await div.text_content()
-                    start_date = None
-                    end_date = None
+        # Convert found companies to client records
+        for company_name in found_companies:
+            clients.append({
+                'firm_name': firm_name,
+                'firm_registration_number': None,
+                'client_name': company_name,
+                'client_registration_number': None,
+                'start_date': None,
+                'end_date': None
+            })
 
-                    # Extract dates from text
-                    import re
-                    date_pattern = r'\d{1,2}/\d{1,2}/\d{4}|\d{4}'
-                    dates = re.findall(date_pattern, date_text)
-                    if dates:
-                        start_date = parse_italian_date(dates[0])
-                        if len(dates) > 1:
-                            end_date = parse_italian_date(dates[1])
-
-                    clients.append({
-                        'firm_name': firm_name,
-                        'firm_registration_number': None,
-                        'client_name': client_name.strip(),
-                        'client_registration_number': None,
-                        'start_date': start_date,
-                        'end_date': end_date
-                    })
 
     except Exception as e:
         logger.error(f"Error extracting clients from page: {e}")
@@ -275,60 +214,37 @@ def scrape(firm_name: str) -> List[Dict[str, Optional[str]]]:
         page = context.new_page()
 
         try:
-            # Navigate to the search page
-            search_url = f"{base_url}/sito/ricerca-avanzata.html"
-            page.goto(search_url, wait_until='networkidle', timeout=30000)
+            # Navigate to the registry page which lists all firms
+            registry_url = f"{base_url}/sito/registro.html"
+            page.goto(registry_url, wait_until='networkidle', timeout=30000)
 
-            # Try the main listing page as fallback
-            listing_url = f"{base_url}/sito/elenco-categorie.html"
-
-            # Search for the firm
-            search_input = page.query_selector('input[type="text"], input[name*="search"], input[name*="ricerca"]')
-            if search_input:
-                search_input.fill(firm_name)
-                page.keyboard.press('Enter')
-                page.wait_for_load_state('networkidle', timeout=10000)
-            else:
-                # Try navigating directly to listing page
-                page.goto(listing_url, wait_until='networkidle', timeout=30000)
-
-            # Look for links containing the firm name
-            links = page.query_selector_all('a')
+            # Look for the firm in the registry
+            # Try exact match first, then partial match
             firm_found = False
+            firm_href = None
 
-            for link in links:
+            # Try to find firm link with exact or partial match
+            firm_links = page.query_selector_all('a[href*="legal_"]')
+
+            for link in firm_links:
                 text = link.text_content()
-                if text and firm_name.lower() in text.lower():
-                    href = link.get_attribute('href')
-                    if href and 'scheda' in href:
-                        # Found a firm detail page
-                        if not href.startswith('http'):
-                            href = base_url + '/' + href.lstrip('/')
-
-                        # Navigate to firm detail page
-                        page.goto(href, wait_until='networkidle', timeout=30000)
-                        firm_found = True
-                        break
-
-            if not firm_found:
-                # Try direct URL patterns
-                direct_urls = [
-                    f"{base_url}/sito/legal_353/scheda-persona-giuridica.html",
-                    f"{base_url}/sito/scheda-persona-giuridica.html"
-                ]
-
-                for url in direct_urls:
-                    try:
-                        page.goto(url, wait_until='networkidle', timeout=30000)
-                        # Check if page contains firm name
-                        content = page.content()
-                        if firm_name.lower() in content.lower():
+                if text:
+                    text = text.strip()
+                    # Check for match (case insensitive)
+                    if firm_name.lower() in text.lower() or text.lower() in firm_name.lower():
+                        firm_href = link.get_attribute('href')
+                        if firm_href:
                             firm_found = True
+                            logger.info(f"Found firm '{text}' at {firm_href}")
                             break
-                    except:
-                        continue
 
-            if firm_found:
+            if firm_found and firm_href:
+                # Navigate to the firm's detail page
+                if not firm_href.startswith('http'):
+                    firm_href = base_url + firm_href
+
+                page.goto(firm_href, wait_until='networkidle', timeout=30000)
+
                 # Extract client information from the detail page
                 clients = extract_clients_sync(page, firm_name)
 
@@ -346,96 +262,66 @@ def extract_clients_sync(page, firm_name: str) -> List[Dict[str, Optional[str]]]
     clients = []
 
     try:
-        # Look for tables containing client data
-        tables = page.query_selector_all('table')
-        for table in tables:
-            rows = table.query_selector_all('tr')
-            for row in rows:
-                cells = row.query_selector_all('td, th')
-                if len(cells) >= 2:
-                    # Extract text from cells
-                    cell_texts = []
-                    for cell in cells:
-                        text = cell.text_content()
-                        if text:
-                            cell_texts.append(text.strip())
+        # Get page content to check for client sections
+        content = page.content()
 
-                    # Look for client-like data
-                    if len(cell_texts) >= 2:
-                        potential_client = cell_texts[0]
-                        # Skip header rows
-                        if not any(header in potential_client.lower() for header in ['cliente', 'soggetto', 'denominazione', 'nome']):
-                            # Extract dates if present
-                            start_date = None
-                            end_date = None
+        # Look for company names with Italian legal suffixes
+        import re
 
-                            for text in cell_texts[1:]:
-                                # Look for date patterns (DD/MM/YYYY or YYYY)
-                                if '/' in text or text.isdigit():
-                                    if not start_date:
-                                        start_date = parse_italian_date(text)
-                                    elif not end_date:
-                                        end_date = parse_italian_date(text)
+        # Italian company patterns
+        company_patterns = [
+            r'\b[\w\s]+\s+S\.p\.A\.?\b',
+            r'\b[\w\s]+\s+S\.r\.l\.?\b',
+            r'\b[\w\s]+\s+SPA\b',
+            r'\b[\w\s]+\s+SRL\b',
+            r'\b[\w\s]+\s+S\.R\.L\.?\b',
+            r'\b[\w\s]+\s+S\.P\.A\.?\b',
+            r'\b[\w\s]+\s+S\.c\.a r\.l\.?\b',
+            r'\b[\w\s]+\s+S\.n\.c\.?\b',
+            r'\b[\w\s]+\s+S\.a\.s\.?\b'
+        ]
 
-                            if potential_client and potential_client != firm_name:
-                                clients.append({
-                                    'firm_name': firm_name,
-                                    'firm_registration_number': None,
-                                    'client_name': potential_client,
-                                    'client_registration_number': None,
-                                    'start_date': start_date,
-                                    'end_date': end_date
-                                })
+        found_companies = set()
 
-        # Look for lists of clients
-        lists = page.query_selector_all('ul li, ol li')
-        for item in lists:
-            text = item.text_content()
-            if text and text.strip() and text.strip() != firm_name:
-                # Check if this looks like a client entry
-                if not any(skip in text.lower() for skip in ['cookie', 'privacy', 'menu', 'home']):
-                    clients.append({
-                        'firm_name': firm_name,
-                        'firm_registration_number': None,
-                        'client_name': text.strip(),
-                        'client_registration_number': None,
-                        'start_date': None,
-                        'end_date': None
-                    })
+        # Extract companies from content
+        for pattern in company_patterns:
+            matches = re.findall(pattern, content, re.IGNORECASE)
+            for match in matches:
+                # Clean up the match
+                match = match.strip()
+                # Skip if it's the firm itself
+                if firm_name.lower() not in match.lower() and match.lower() not in firm_name.lower():
+                    # Skip common non-client entries
+                    if not any(skip in match.lower() for skip in ['camera', 'registro', 'cookie', 'privacy']):
+                        found_companies.add(match)
 
-        # Look for divs or sections with client information
-        client_divs = page.query_selector_all(
-            'div.client, div.cliente, div.rappresentato, '
-            'article.client, article.cliente'
-        )
+        # Also look for card-div elements which may contain client info
+        card_divs = page.query_selector_all('.card-div')
+        for card in card_divs:
+            text = card.text_content()
+            if text:
+                text = text.strip()
+                # Skip the firm's own info card and category cards
+                if firm_name.lower() not in text.lower():
+                    if not any(skip in text.lower() for skip in ['categoria:', 'sede:', 'telefono:', 'email:', 'pec:', 'soggetti rappresentati']):
+                        # Look for company patterns in this card
+                        for pattern in company_patterns:
+                            matches = re.findall(pattern, text, re.IGNORECASE)
+                            for match in matches:
+                                match = match.strip()
+                                if match not in found_companies:
+                                    found_companies.add(match)
 
-        for div in client_divs:
-            name_elem = div.query_selector('h3, h4, strong, .name, .nome')
-            if name_elem:
-                client_name = name_elem.text_content()
-                if client_name and client_name.strip() != firm_name:
-                    # Look for dates in the same div
-                    date_text = div.text_content()
-                    start_date = None
-                    end_date = None
-
-                    # Extract dates from text
-                    import re
-                    date_pattern = r'\d{1,2}/\d{1,2}/\d{4}|\d{4}'
-                    dates = re.findall(date_pattern, date_text)
-                    if dates:
-                        start_date = parse_italian_date(dates[0])
-                        if len(dates) > 1:
-                            end_date = parse_italian_date(dates[1])
-
-                    clients.append({
-                        'firm_name': firm_name,
-                        'firm_registration_number': None,
-                        'client_name': client_name.strip(),
-                        'client_registration_number': None,
-                        'start_date': start_date,
-                        'end_date': end_date
-                    })
+        # Convert found companies to client records
+        for company_name in found_companies:
+            clients.append({
+                'firm_name': firm_name,
+                'firm_registration_number': None,
+                'client_name': company_name,
+                'client_registration_number': None,
+                'start_date': None,
+                'end_date': None
+            })
 
     except Exception as e:
         logger.error(f"Error extracting clients from page: {e}")

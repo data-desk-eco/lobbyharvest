@@ -3,14 +3,12 @@ Australian Lobbying Register scraper - extracts client data from Australian regi
 """
 import logging
 import re
-from typing import Dict, List
-
-import requests
-from bs4 import BeautifulSoup
+from typing import Dict, List, Optional
+from playwright.sync_api import sync_playwright, Page
 
 logger = logging.getLogger(__name__)
 
-def scrape(firm_name: str) -> List[Dict[str, str]]:
+def scrape(firm_name: str) -> List[Dict[str, Optional[str]]]:
     """
     Scrape client information from Australian Lobbying Register
 
@@ -23,218 +21,230 @@ def scrape(firm_name: str) -> List[Dict[str, str]]:
     clients = []
     base_url = "https://lobbyists.ag.gov.au"
 
-    session = requests.Session()
-    session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-    })
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
 
-    try:
-        # First, get the main register page
-        register_url = f"{base_url}/register"
-        response = session.get(register_url, timeout=10)
-        response.raise_for_status()
+        try:
+            # Navigate to the register (Angular app)
+            logger.info(f"Navigating to Australian Lobbying Register for {firm_name}")
+            page.goto(f"{base_url}/register", wait_until='networkidle')
 
-        soup = BeautifulSoup(response.text, 'lxml')
+            # Wait for Angular app to load
+            page.wait_for_timeout(3000)
 
-        # Look for search form or links to firms
-        # The Australian register often uses tables
-        tables = soup.find_all('table')
-
-        for table in tables:
-            # Look for firm in table rows
-            rows = table.find_all('tr')
-            for row in rows:
-                cells = row.find_all(['td', 'th'])
-                for cell in cells:
-                    cell_text = cell.get_text(strip=True)
-                    if firm_name.lower() in cell_text.lower():
-                        # Found a matching firm, look for link to details
-                        link = row.find('a')
-                        if link and link.get('href'):
-                            detail_url = link['href']
-                            if not detail_url.startswith('http'):
-                                detail_url = base_url + detail_url
-
-                            # Fetch the detail page
-                            detail_response = session.get(detail_url, timeout=10)
-                            if detail_response.status_code == 200:
-                                detail_soup = BeautifulSoup(detail_response.text, 'lxml')
-                                clients.extend(parse_detail_page(detail_soup, firm_name))
-                        break
-
-        # If no results from tables, try searching
-        if not clients:
             # Look for search functionality
-            search_forms = soup.find_all('form')
-            for form in search_forms:
-                action = form.get('action', '')
-                if 'search' in action.lower():
-                    search_url = action if action.startswith('http') else base_url + action
+            # The Angular app may have a search box
+            search_input = page.locator('input[type="search"], input[placeholder*="Search"], input[placeholder*="search"], input[name*="search"], input[id*="search"]').first
 
-                    # Submit search
-                    search_data = {
-                        'search': firm_name,
-                        'q': firm_name,
-                        'query': firm_name,
-                        'name': firm_name,
-                        'firm': firm_name,
-                        'lobbyist': firm_name
-                    }
+            if search_input.count() > 0:
+                logger.info(f"Found search input, searching for {firm_name}")
+                search_input.fill(firm_name)
+                page.keyboard.press('Enter')
+                page.wait_for_load_state('networkidle')
+                page.wait_for_timeout(2000)
+            else:
+                # Try clicking on a browse/view all link first
+                browse_link = page.locator('a:has-text("View all"), a:has-text("Browse"), a:has-text("All lobbyists")').first
+                if browse_link.count() > 0:
+                    browse_link.click()
+                    page.wait_for_load_state('networkidle')
+                    page.wait_for_timeout(2000)
 
-                    # Try POST first
-                    try:
-                        search_response = session.post(search_url, data=search_data, timeout=10)
-                        if search_response.status_code == 200:
-                            search_soup = BeautifulSoup(search_response.text, 'lxml')
-                            clients.extend(parse_search_results(search_soup, firm_name))
-                    except Exception:
-                        # Try GET
+            # Look for results - try multiple selectors
+            # Check for table rows or cards with firm name
+            result_selectors = [
+                f'tr:has-text("{firm_name}")',
+                f'div.card:has-text("{firm_name}")',
+                f'div.result:has-text("{firm_name}")',
+                f'a:has-text("{firm_name}")',
+                f'td:has-text("{firm_name}")'
+            ]
+
+            found_result = False
+            for selector in result_selectors:
+                results = page.locator(selector).all()
+                if results:
+                    logger.info(f"Found {len(results)} results with selector {selector}")
+                    for result in results[:3]:  # Process first 3 matches
                         try:
-                            search_response = session.get(search_url, params=search_data, timeout=10)
-                            if search_response.status_code == 200:
-                                search_soup = BeautifulSoup(search_response.text, 'lxml')
-                                clients.extend(parse_search_results(search_soup, firm_name))
-                        except Exception:
-                            pass
+                            # Look for a link to details page
+                            link = result.locator('a').first
+                            if link.count() > 0:
+                                link.click()
+                                page.wait_for_load_state('networkidle')
+                                page.wait_for_timeout(2000)
 
-                    if clients:
+                                # Extract details from the page
+                                extracted = extract_details_from_page(page, firm_name)
+                                if extracted:
+                                    clients.extend(extracted)
+                                    found_result = True
+
+                                # Go back to results
+                                page.go_back()
+                                page.wait_for_load_state('networkidle')
+                                page.wait_for_timeout(1000)
+                            else:
+                                # Try to extract from the current view
+                                extracted = extract_from_result_row(result, firm_name)
+                                if extracted:
+                                    clients.extend(extracted)
+                                    found_result = True
+                        except Exception as e:
+                            logger.warning(f"Error processing result: {e}")
+                            continue
+
+                    if found_result:
                         break
 
-    except requests.RequestException as e:
-        logger.error(f"Failed to fetch Australian lobbying data: {e}")
+            if not found_result:
+                # Try alternative approach - look for the firm in all page text
+                page_text = page.content()
+                if firm_name.lower() in page_text.lower():
+                    logger.info(f"Found {firm_name} in page content, attempting extraction")
+                    # Extract any visible client information
+                    clients.extend(extract_clients_from_page(page, firm_name))
+
+        except Exception as e:
+            logger.error(f"Failed to scrape Australian lobbying data: {e}")
+        finally:
+            browser.close()
 
     logger.info(f"Found {len(clients)} clients for {firm_name}")
     return clients
 
-def parse_detail_page(soup: BeautifulSoup, firm_name: str) -> List[Dict[str, str]]:
-    """Parse a firm's detail page for client information"""
+def extract_details_from_page(page: Page, firm_name: str) -> List[Dict[str, Optional[str]]]:
+    """Extract client details from a lobbyist detail page"""
     clients = []
 
-    # Extract firm ABN if present
-    firm_abn = None
-    abn_pattern = re.compile(r'\b\d{2}\s?\d{3}\s?\d{3}\s?\d{3}\b')
-    abn_match = abn_pattern.search(soup.get_text())
-    if abn_match:
-        firm_abn = abn_match.group(0).replace(' ', '')
+    try:
+        # Extract firm ABN if present
+        firm_abn = None
+        abn_elem = page.locator('text=/\\b\\d{2}\\s?\\d{3}\\s?\\d{3}\\s?\\d{3}\\b/').first
+        if abn_elem.count() > 0:
+            abn_text = abn_elem.text_content()
+            if abn_text:
+                firm_abn = re.sub(r'\s', '', abn_text)
 
-    # Look for client sections
-    # Common patterns: "Clients", "Client Details", "Registered Clients"
-    client_headers = soup.find_all(['h2', 'h3', 'h4', 'strong'],
-                                  string=re.compile(r'client', re.I))
+        # Look for client sections
+        client_sections = [
+            'h2:has-text("Client")',
+            'h3:has-text("Client")',
+            'h4:has-text("Client")',
+            'strong:has-text("Client")',
+            'text=/.*Clients.*/i'
+        ]
 
-    for header in client_headers:
-        # Check next siblings for client information
-        current = header.find_next_sibling()
-        while current and current.name not in ['h2', 'h3', 'h4']:
-            if current.name == 'table':
-                # Parse table of clients
-                rows = current.find_all('tr')[1:]  # Skip header
-                for row in rows:
-                    cells = row.find_all(['td', 'th'])
-                    if cells:
-                        client_name = cells[0].get_text(strip=True)
-                        if client_name and len(client_name) > 3:
-                            clients.append({
-                                'firm_name': firm_name,
-                                'firm_abn': firm_abn,
-                                'client_name': client_name,
-                                'client_abn': cells[1].get_text(strip=True) if len(cells) > 1 else None,
-                                'start_date': cells[2].get_text(strip=True) if len(cells) > 2 else None,
-                                'end_date': cells[3].get_text(strip=True) if len(cells) > 3 else None
-                            })
+        for selector in client_sections:
+            headers = page.locator(selector).all()
+            for header in headers:
+                # Look for following content
+                parent = header.locator('xpath=..').first
+                if parent.count() > 0:
+                    # Check for tables
+                    tables = parent.locator('table').all()
+                    for table in tables:
+                        rows = table.locator('tbody tr, tr').all()
+                        for row in rows[1:]:  # Skip header
+                            cells = row.locator('td').all()
+                            if cells:
+                                client_name = cells[0].text_content()
+                                if client_name and len(client_name.strip()) > 3:
+                                    clients.append({
+                                        'firm_name': firm_name,
+                                        'firm_registration_number': firm_abn,
+                                        'client_name': client_name.strip(),
+                                        'client_registration_number': cells[1].text_content().strip() if len(cells) > 1 else None,
+                                        'client_start_date': cells[2].text_content().strip() if len(cells) > 2 else None,
+                                        'client_end_date': cells[3].text_content().strip() if len(cells) > 3 else None
+                                    })
 
-            elif current.name in ['ul', 'ol']:
-                # Parse list of clients
-                items = current.find_all('li')
-                for item in items:
-                    client_name = item.get_text(strip=True)
-                    # Extract ABN if present in the text
-                    client_abn = None
-                    abn_match = abn_pattern.search(client_name)
-                    if abn_match:
-                        client_abn = abn_match.group(0).replace(' ', '')
-                        # Remove ABN from client name
-                        client_name = abn_pattern.sub('', client_name).strip()
+                    # Check for lists
+                    lists = parent.locator('ul, ol').all()
+                    for lst in lists:
+                        items = lst.locator('li').all()
+                        for item in items:
+                            client_name = item.text_content()
+                            if client_name and len(client_name.strip()) > 3:
+                                # Extract ABN if present
+                                client_abn = None
+                                abn_match = re.search(r'\b\d{2}\s?\d{3}\s?\d{3}\s?\d{3}\b', client_name)
+                                if abn_match:
+                                    client_abn = abn_match.group(0).replace(' ', '')
+                                    client_name = client_name.replace(abn_match.group(0), '').strip()
 
-                    if client_name and len(client_name) > 3:
-                        clients.append({
-                            'firm_name': firm_name,
-                            'firm_abn': firm_abn,
-                            'client_name': client_name,
-                            'client_abn': client_abn,
-                            'start_date': None,
-                            'end_date': None
-                        })
+                                clients.append({
+                                    'firm_name': firm_name,
+                                    'firm_registration_number': firm_abn,
+                                    'client_name': client_name.strip(),
+                                    'client_registration_number': client_abn,
+                                    'client_start_date': None,
+                                    'client_end_date': None
+                                })
 
-            elif current.name == 'div':
-                # Check for client information in divs
-                text = current.get_text(strip=True)
-                if text and len(text) > 3 and 'client' not in text.lower():
-                    clients.append({
-                        'firm_name': firm_name,
-                        'firm_abn': firm_abn,
-                        'client_name': text,
-                        'client_abn': None,
-                        'start_date': None,
-                        'end_date': None
-                    })
-
-            current = current.find_next_sibling() if current else None
+    except Exception as e:
+        logger.error(f"Error extracting details: {e}")
 
     return clients
 
-def parse_search_results(soup: BeautifulSoup, firm_name: str) -> List[Dict[str, str]]:
-    """Parse search results page"""
+def extract_from_result_row(result, firm_name: str) -> List[Dict[str, Optional[str]]]:
+    """Extract client info from a result row/card"""
     clients = []
 
-    # Look for result tables
-    tables = soup.find_all('table')
-    for table in tables:
-        # Check if this table contains client information
-        headers = table.find_all('th')
-        has_client_column = any('client' in h.get_text(strip=True).lower() for h in headers)
+    try:
+        # Check if this row/card contains client information
+        text_content = result.text_content()
+        if text_content and 'client' in text_content.lower():
+            # Try to extract structured data
+            # Look for patterns like "Client: XYZ"
+            import re
+            client_matches = re.findall(r'[Cc]lient[s]?[:\s]+([^,\n]+)', text_content)
+            for match in client_matches:
+                if match and len(match.strip()) > 3:
+                    clients.append({
+                        'firm_name': firm_name,
+                        'firm_registration_number': None,
+                        'client_name': match.strip(),
+                        'client_registration_number': None,
+                        'client_start_date': None,
+                        'client_end_date': None
+                    })
+    except Exception as e:
+        logger.warning(f"Error extracting from result: {e}")
 
-        if has_client_column:
-            rows = table.find_all('tr')[1:]  # Skip header
-            for row in rows:
-                cells = row.find_all(['td', 'th'])
-                # Find the client column
-                for i, header in enumerate(headers):
-                    if 'client' in header.get_text(strip=True).lower():
-                        if i < len(cells):
-                            client_name = cells[i].get_text(strip=True)
-                            if client_name and len(client_name) > 3:
-                                clients.append({
-                                    'firm_name': firm_name,
-                                    'firm_abn': None,
-                                    'client_name': client_name,
-                                    'client_abn': None,
-                                    'start_date': None,
-                                    'end_date': None
-                                })
-                        break
+    return clients
 
-    # Also look for cards or result items
-    if not clients:
-        result_items = soup.find_all('div', class_=re.compile(r'result|item|card', re.I))
-        for item in result_items:
-            # Look for client information within the item
-            client_elem = item.find(string=re.compile(r'client', re.I))
-            if client_elem:
-                # Get the next text element
-                parent = client_elem.parent
-                if parent:
-                    next_elem = parent.find_next()
-                    if next_elem:
-                        client_name = next_elem.get_text(strip=True)
-                        if client_name and len(client_name) > 3:
+def extract_clients_from_page(page: Page, firm_name: str) -> List[Dict[str, Optional[str]]]:
+    """Extract any visible client information from the current page"""
+    clients = []
+
+    try:
+        # Look for any elements mentioning clients
+        client_elements = page.locator('*:has-text("client")').all()
+
+        for elem in client_elements[:20]:  # Limit to avoid too many elements
+            text = elem.text_content()
+            if text and len(text) < 500:  # Avoid very long text blocks
+                # Look for patterns
+                import re
+                # Pattern: "Client: Name" or "Clients: Name1, Name2"
+                matches = re.findall(r'[Cc]lients?[:\s]+([^.\n]{3,100})', text)
+                for match in matches:
+                    # Split by comma if multiple
+                    names = [n.strip() for n in match.split(',')]
+                    for name in names:
+                        if len(name) > 3 and not any(skip in name.lower() for skip in ['click', 'view', 'search', 'filter']):
                             clients.append({
                                 'firm_name': firm_name,
-                                'firm_abn': None,
-                                'client_name': client_name,
-                                'client_abn': None,
-                                'start_date': None,
-                                'end_date': None
+                                'firm_registration_number': None,
+                                'client_name': name,
+                                'client_registration_number': None,
+                                'client_start_date': None,
+                                'client_end_date': None
                             })
+
+    except Exception as e:
+        logger.error(f"Error extracting clients from page: {e}")
 
     return clients
