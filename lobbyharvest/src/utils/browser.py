@@ -1,10 +1,10 @@
 """Browser management utilities for headless systems"""
+import atexit
 import os
 import subprocess
 import time
-import atexit
 from contextlib import contextmanager
-from typing import Optional
+
 
 class XvfbManager:
     """Manages Xvfb virtual display for headless browser automation"""

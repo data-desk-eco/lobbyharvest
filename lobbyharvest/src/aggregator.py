@@ -2,12 +2,12 @@
 import asyncio
 import csv
 import json
-from pathlib import Path
-from typing import Dict, List, Optional
-from datetime import datetime
 import logging
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List
 
-from .utils.normalize import merge_client_records, normalize_date, validate_record
+from .utils.normalize import merge_client_records, validate_record
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

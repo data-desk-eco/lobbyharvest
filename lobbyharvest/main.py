@@ -3,7 +3,7 @@ import csv
 import json
 from pathlib import Path
 from typing import Optional, List, Dict
-from src.scrapers import lobbyfacts_lite, uk_lobbying, australia_lobbying, fara
+from src.scrapers import lobbyfacts, uk_lobbying, australia_lobbying, fara
 
 
 @click.group()
@@ -21,7 +21,7 @@ def lobbyfacts_scrape(firm_name, url, output, format):
     """Scrape Lobbyfacts.eu for firm client data"""
     click.echo(f"Scraping Lobbyfacts for {firm_name}...")
 
-    clients = lobbyfacts_lite.scrape_lobbyfacts(firm_name, url)
+    clients = lobbyfacts.scrape_lobbyfacts(firm_name, url)
 
     if not clients:
         click.echo("No clients found.")

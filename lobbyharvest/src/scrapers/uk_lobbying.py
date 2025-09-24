@@ -1,145 +1,207 @@
-import asyncio
-from datetime import datetime
-from typing import List, Dict, Optional
-from playwright.async_api import async_playwright, Page
+"""
+UK Lobbying Register scraper - extracts client data from UK lobbying registry
+"""
+import logging
+import re
+from typing import Dict, List, Optional
 
+import requests
+from bs4 import BeautifulSoup
 
-async def search_firm(page: Page, firm_name: str) -> None:
-    await page.goto("https://lobbying-register.uk/")
+logger = logging.getLogger(__name__)
 
-    search_input = page.locator("input[type='search'], input[placeholder*='Search'], #search")
-    await search_input.wait_for(timeout=10000)
-    await search_input.fill(firm_name)
-    await search_input.press("Enter")
+def scrape(firm_name: str) -> List[Dict[str, str]]:
+    """
+    Scrape client information from UK Lobbying Register
 
-    await page.wait_for_load_state("networkidle", timeout=10000)
-    await asyncio.sleep(2)
+    Args:
+        firm_name: Name of the lobbying firm to search
 
-
-async def extract_firm_details(page: Page) -> Dict[str, Optional[str]]:
-    firm_data = {"firm_name": None, "firm_registration_number": None}
-
-    try:
-        firm_name_elem = page.locator("h1, h2").filter(has_text=lambda text: text and len(text) > 0).first
-        if await firm_name_elem.count() > 0:
-            firm_data["firm_name"] = await firm_name_elem.text_content()
-            firm_data["firm_name"] = firm_data["firm_name"].strip() if firm_data["firm_name"] else None
-
-        reg_number_elem = page.locator("text=/Registration [Nn]umber|Reg\\.? [Nn]o\\.?/i").first
-        if await reg_number_elem.count() > 0:
-            parent = reg_number_elem.locator("..")
-            text = await parent.text_content()
-            if text:
-                import re
-                match = re.search(r'[A-Z0-9]{6,}', text)
-                if match:
-                    firm_data["firm_registration_number"] = match.group(0)
-    except:
-        pass
-
-    return firm_data
-
-
-async def extract_clients(page: Page) -> List[Dict[str, Optional[str]]]:
+    Returns:
+        List of client dictionaries
+    """
     clients = []
 
-    client_sections = page.locator("div, section, article").filter(
-        has_text=lambda text: "client" in text.lower() if text else False
-    )
+    # The UK site appears to be JavaScript-heavy but may have an API
+    # Let's try searching directly
+    base_url = "https://lobbying-register.uk"
+    search_url = f"{base_url}/search"
 
-    for i in range(await client_sections.count()):
-        section = client_sections.nth(i)
-        text = await section.text_content()
-        if not text:
-            continue
+    session = requests.Session()
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'application/json, text/html, */*'
+    })
 
-        lines = text.split('\n')
-        current_client = {}
+    try:
+        # Try different search approaches
+        # Approach 1: Direct search endpoint
+        search_params = {
+            'q': firm_name,
+            'query': firm_name,
+            'search': firm_name,
+            'name': firm_name
+        }
 
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
+        for param_name, param_value in search_params.items():
+            try:
+                response = session.get(search_url, params={param_name: param_value}, timeout=10)
+                if response.status_code == 200:
+                    # Check if it's JSON
+                    if 'application/json' in response.headers.get('content-type', ''):
+                        data = response.json()
+                        clients.extend(parse_json_results(data, firm_name))
+                    else:
+                        # Parse HTML
+                        soup = BeautifulSoup(response.text, 'lxml')
+                        clients.extend(parse_html_results(soup, firm_name))
 
-            if not current_client.get("client_name") and len(line) > 2 and not any(
-                keyword in line.lower() for keyword in ["client", "period", "date", "from", "to"]
-            ):
-                current_client["client_name"] = line
+                    if clients:
+                        break
+            except Exception as e:
+                logger.debug(f"Search with param {param_name} failed: {e}")
 
-            import re
-            date_pattern = r'\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\w+ \d{1,2},? \d{4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})\b'
-            dates = re.findall(date_pattern, line)
-            if dates:
-                if not current_client.get("start_date"):
-                    current_client["start_date"] = dates[0]
-                if len(dates) > 1:
-                    current_client["end_date"] = dates[1]
+        # Approach 2: Try the main page and look for firm listings
+        if not clients:
+            response = session.get(base_url, timeout=10)
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'lxml')
 
-            reg_pattern = r'\b[A-Z0-9]{6,}\b'
-            reg_match = re.search(reg_pattern, line)
-            if reg_match and not current_client.get("client_registration_number"):
-                current_client["client_registration_number"] = reg_match.group(0)
+                # Look for links or references to the firm
+                firm_links = soup.find_all('a', string=re.compile(firm_name, re.I))
+                for link in firm_links[:1]:  # Follow first matching link
+                    href = link.get('href')
+                    if href:
+                        if not href.startswith('http'):
+                            href = base_url + href
 
-            if current_client.get("client_name") and (
-                current_client.get("start_date") or current_client.get("client_registration_number")
-            ):
-                if current_client not in clients:
-                    clients.append(current_client.copy())
-                current_client = {}
+                        detail_response = session.get(href, timeout=10)
+                        if detail_response.status_code == 200:
+                            detail_soup = BeautifulSoup(detail_response.text, 'lxml')
+                            clients.extend(parse_firm_detail_page(detail_soup, firm_name))
+
+    except requests.RequestException as e:
+        logger.error(f"Failed to fetch UK lobbying data: {e}")
+
+    # If still no results, return placeholder data indicating the issue
+    if not clients:
+        logger.warning(f"No results found for {firm_name} - site may require JavaScript")
+        # Return empty list rather than placeholder
+        return []
+
+    logger.info(f"Found {len(clients)} clients for {firm_name}")
+    return clients
+
+def parse_json_results(data: dict, firm_name: str) -> List[Dict[str, str]]:
+    """Parse JSON response from UK lobbying API"""
+    clients = []
+
+    # Handle different possible JSON structures
+    if isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict):
+                client = extract_client_from_json(item, firm_name)
+                if client:
+                    clients.append(client)
+    elif isinstance(data, dict):
+        # Check for results array
+        for key in ['results', 'data', 'items', 'clients']:
+            if key in data and isinstance(data[key], list):
+                for item in data[key]:
+                    client = extract_client_from_json(item, firm_name)
+                    if client:
+                        clients.append(client)
+                break
 
     return clients
 
+def extract_client_from_json(item: dict, firm_name: str) -> Optional[Dict[str, str]]:
+    """Extract client information from JSON item"""
+    # Look for client name in various possible fields
+    client_name = None
+    for field in ['client', 'clientName', 'client_name', 'name', 'organisation']:
+        if field in item:
+            client_name = item[field]
+            break
 
-async def scrape_uk_lobbying(firm_name: str) -> List[Dict[str, Optional[str]]]:
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        )
-        page = await context.new_page()
+    if not client_name:
+        return None
 
-        results = []
+    return {
+        'firm_name': firm_name,
+        'firm_registration_number': item.get('registrationNumber', item.get('registration_number')),
+        'client_name': client_name,
+        'client_registration_number': item.get('clientRegistrationNumber', item.get('client_registration_number')),
+        'start_date': item.get('startDate', item.get('start_date')),
+        'end_date': item.get('endDate', item.get('end_date'))
+    }
 
-        try:
-            await search_firm(page, firm_name)
+def parse_html_results(soup: BeautifulSoup, firm_name: str) -> List[Dict[str, str]]:
+    """Parse HTML search results page"""
+    clients = []
 
-            search_results = page.locator("a").filter(has_text=lambda text: firm_name.lower() in text.lower() if text else False)
-            if await search_results.count() > 0:
-                await search_results.first.click()
-                await page.wait_for_load_state("networkidle", timeout=10000)
+    # Look for result cards, tables, or lists
+    # Try tables first
+    tables = soup.find_all('table')
+    for table in tables:
+        rows = table.find_all('tr')[1:]  # Skip header
+        for row in rows:
+            cells = row.find_all(['td', 'th'])
+            if len(cells) >= 2:
+                # Assume first cell is firm, second is client
+                client_name = cells[1].get_text(strip=True)
+                if client_name and len(client_name) > 3:
+                    clients.append({
+                        'firm_name': firm_name,
+                        'firm_registration_number': None,
+                        'client_name': client_name,
+                        'client_registration_number': None,
+                        'start_date': cells[2].get_text(strip=True) if len(cells) > 2 else None,
+                        'end_date': cells[3].get_text(strip=True) if len(cells) > 3 else None
+                    })
 
-            firm_data = await extract_firm_details(page)
-            clients = await extract_clients(page)
+    # Try cards/divs
+    if not clients:
+        cards = soup.find_all('div', class_=re.compile(r'card|result|item|entry', re.I))
+        for card in cards:
+            client_elem = card.find(string=re.compile(r'client', re.I))
+            if client_elem:
+                client_name = client_elem.find_next().get_text(strip=True) if client_elem.find_next() else None
+                if client_name:
+                    clients.append({
+                        'firm_name': firm_name,
+                        'firm_registration_number': None,
+                        'client_name': client_name,
+                        'client_registration_number': None,
+                        'start_date': None,
+                        'end_date': None
+                    })
 
-            for client in clients:
-                result = {
-                    "firm_name": firm_data.get("firm_name") or firm_name,
-                    "firm_registration_number": firm_data.get("firm_registration_number"),
-                    "client_name": client.get("client_name"),
-                    "client_registration_number": client.get("client_registration_number"),
-                    "start_date": client.get("start_date"),
-                    "end_date": client.get("end_date")
-                }
-                results.append(result)
+    return clients
 
-            if not results and firm_data.get("firm_name"):
-                results.append({
-                    "firm_name": firm_data.get("firm_name") or firm_name,
-                    "firm_registration_number": firm_data.get("firm_registration_number"),
-                    "client_name": None,
-                    "client_registration_number": None,
-                    "start_date": None,
-                    "end_date": None
-                })
+def parse_firm_detail_page(soup: BeautifulSoup, firm_name: str) -> List[Dict[str, str]]:
+    """Parse a firm's detail page for client information"""
+    clients = []
 
-        except Exception as e:
-            print(f"Error scraping UK Lobbying Register: {e}")
+    # Look for sections containing client information
+    client_sections = soup.find_all(['section', 'div'],
+                                   string=re.compile(r'client', re.I))
 
-        finally:
-            await browser.close()
+    for section in client_sections:
+        # Find lists or tables within the section
+        lists = section.find_all(['ul', 'ol'])
+        for lst in lists:
+            items = lst.find_all('li')
+            for item in items:
+                client_name = item.get_text(strip=True)
+                if client_name and len(client_name) > 3:
+                    clients.append({
+                        'firm_name': firm_name,
+                        'firm_registration_number': None,
+                        'client_name': client_name,
+                        'client_registration_number': None,
+                        'start_date': None,
+                        'end_date': None
+                    })
 
-        return results
-
-
-def scrape(firm_name: str) -> List[Dict[str, Optional[str]]]:
-    return asyncio.run(scrape_uk_lobbying(firm_name))
+    return clients

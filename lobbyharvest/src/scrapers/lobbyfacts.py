@@ -1,128 +1,135 @@
+"""
+Lobbyfacts.eu scraper - extracts client data from EU Transparency Register
+"""
+import logging
 import re
-from datetime import datetime
-from typing import List, Dict, Optional
-from playwright.sync_api import sync_playwright, Page
-import click
-from ..utils.browser import ensure_display, get_browser_args
+from typing import Dict, List, Optional
 
-def extract_rid_from_url(url: str) -> Optional[str]:
-    match = re.search(r'rid=([^&]+)', url)
-    return match.group(1) if match else None
+import requests
+from bs4 import BeautifulSoup
 
-def search_firm(page: Page, firm_name: str) -> Optional[str]:
-    search_url = "https://www.lobbyfacts.eu/search/all"
-    page.goto(search_url)
-    page.wait_for_load_state("networkidle")
+logger = logging.getLogger(__name__)
 
-    search_input = page.locator('input[name="q"]')
-    search_input.fill(firm_name)
-    search_input.press("Enter")
-
-    page.wait_for_load_state("networkidle")
-
-    results = page.locator('.search-result-item a[href*="/datacard/"]')
-    if results.count() > 0:
-        first_result = results.first
-        href = first_result.get_attribute("href")
-        if href:
-            return f"https://www.lobbyfacts.eu{href}"
-
-    return None
+# Common navigation/UI terms to filter out
+FILTER_TERMS = [
+    'search', 'about', 'disclaimer', 'cabinet', 'member', 'how to',
+    'latest stories', 'info', 'people', 'employment', 'transparency',
+    'register', 'login', 'contact', 'privacy', 'terms', 'cookies',
+    'home', 'menu', 'navigation', 'footer', 'header',
+    'categories', 'affiliation', 'financial data', 'eu structures',
+    'meetings', 'platforms'
+]
 
 def scrape_lobbyfacts(firm_name: str, url: Optional[str] = None) -> List[Dict[str, str]]:
+    """
+    Scrape client information from Lobbyfacts.eu
+
+    Args:
+        firm_name: Name of the lobbying firm
+        url: Direct URL to the firm's Lobbyfacts page (required for now)
+
+    Returns:
+        List of client dictionaries with firm and client information
+    """
+    if not url:
+        logger.error(f"Direct URL required for {firm_name}. Search functionality coming soon.")
+        return []
+
+    session = requests.Session()
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    })
+
+    try:
+        response = session.get(url, timeout=10)
+        response.raise_for_status()
+    except requests.RequestException as e:
+        logger.error(f"Failed to fetch {url}: {e}")
+        return []
+
+    soup = BeautifulSoup(response.text, 'lxml')
+
+    # Extract firm ID from URL
+    rid_match = re.search(r'rid=([^&]+)', url)
+    firm_id = rid_match.group(1) if rid_match else None
+
     clients = []
+    seen_clients = set()
 
-    # Ensure display for headless environment
-    ensure_display()
+    # Strategy 1: Look for sections with "Clients" in the heading
+    client_headers = soup.find_all(['h2', 'h3', 'h4'],
+                                  string=re.compile(r'Clients.*financial year', re.I))
 
-    with sync_playwright() as p:
-        try:
-            browser_args = get_browser_args(headless=True)
-            browser = p.chromium.launch(**browser_args)
-        except Exception as e:
-            if "Host system is missing dependencies" in str(e):
-                click.echo("Browser dependencies missing. Trying with Xvfb...", err=True)
-                # Try again with virtual display
-                ensure_display()
-                browser_args = get_browser_args(headless=False)
-                try:
-                    browser = p.chromium.launch(**browser_args)
-                except Exception as e2:
-                    click.echo(f"Failed to launch browser: {e2}", err=True)
-                    return clients
-            else:
-                raise
+    for header in client_headers:
+        # Get all siblings until next header
+        current = header.find_next_sibling()
+        while current and current.name not in ['h2', 'h3', 'h4']:
+            if current.name in ['ul', 'ol']:
+                for item in current.find_all('li'):
+                    client_name = clean_client_name(item.get_text(strip=True))
+                    if is_valid_client(client_name) and client_name not in seen_clients:
+                        seen_clients.add(client_name)
+                        clients.append(create_client_record(firm_name, firm_id, client_name))
+            current = current.find_next_sibling() if current else None
 
-        page = browser.new_page()
+    # Strategy 2: Find lists with many items (likely client lists)
+    all_lists = soup.find_all(['ul', 'ol'])
+    for lst in all_lists:
+        items = lst.find_all('li')
 
-        try:
-            if not url:
-                url = search_firm(page, firm_name)
-                if not url:
-                    click.echo(f"No results found for {firm_name}")
-                    return clients
+        # Client lists typically have many entries
+        if len(items) >= 5:
+            # Sample first few items to check if they look like clients
+            sample_items = items[:min(5, len(items))]
+            valid_samples = sum(1 for item in sample_items
+                              if is_valid_client(item.get_text(strip=True)))
 
-            page.goto(url)
-            page.wait_for_load_state("networkidle")
+            # If most samples look like clients, process the whole list
+            if valid_samples >= 3:
+                for item in items:
+                    client_name = clean_client_name(item.get_text(strip=True))
+                    if is_valid_client(client_name) and client_name not in seen_clients:
+                        seen_clients.add(client_name)
+                        clients.append(create_client_record(firm_name, firm_id, client_name))
 
-            rid = extract_rid_from_url(url)
-
-            clients_section = page.locator('h3:has-text("Clients for closed financial year")')
-
-            if clients_section.count() > 0:
-                clients_container = clients_section.locator('xpath=..').locator('..')
-
-                client_items = clients_container.locator('.client-item, .list-group-item, li, div[class*="client"]')
-
-                if client_items.count() == 0:
-                    client_items = clients_container.locator('xpath=.//following-sibling::*[1]//a | .//following-sibling::*[1]//li')
-
-                for i in range(client_items.count()):
-                    client_item = client_items.nth(i)
-                    client_text = client_item.text_content().strip()
-
-                    if client_text:
-                        client_data = {
-                            "firm_name": firm_name,
-                            "firm_registration_number": rid or "",
-                            "client_name": client_text,
-                            "client_registration_number": "",
-                            "client_start_date": "",
-                            "client_end_date": ""
-                        }
-
-                        date_match = re.search(r'(\d{4})', client_text)
-                        if date_match:
-                            year = date_match.group(1)
-                            client_data["client_start_date"] = f"{year}-01-01"
-                            client_data["client_end_date"] = f"{year}-12-31"
-                            client_data["client_name"] = re.sub(r'\s*\d{4}\s*', '', client_text).strip()
-
-                        clients.append(client_data)
-
-            if not clients:
-                table_rows = page.locator('table tr:has(td)')
-                for i in range(table_rows.count()):
-                    row = table_rows.nth(i)
-                    cells = row.locator('td')
-                    if cells.count() >= 2:
-                        client_name = cells.first.text_content().strip()
-                        if client_name and "client" in row.text_content().lower():
-                            clients.append({
-                                "firm_name": firm_name,
-                                "firm_registration_number": rid or "",
-                                "client_name": client_name,
-                                "client_registration_number": "",
-                                "client_start_date": "",
-                                "client_end_date": ""
-                            })
-
-        except Exception as e:
-            click.echo(f"Error scraping Lobbyfacts: {e}", err=True)
-        finally:
-            browser.close()
-
+    logger.info(f"Found {len(clients)} clients for {firm_name}")
     return clients
 
-def main(firm_name: str, url: Optional[str] = None) -> List[Dict[str, str]]:
-    return scrape_lobbyfacts(firm_name, url)
+def clean_client_name(text: str) -> str:
+    """Clean and normalize client name"""
+    # Remove extra whitespace
+    text = ' '.join(text.split())
+    # Remove common suffixes in parentheses
+    text = re.sub(r'\s*\([^)]*\)\s*$', '', text)
+    return text.strip()
+
+def is_valid_client(name: str) -> bool:
+    """Check if a string looks like a valid client name"""
+    if not name or len(name) < 3:
+        return False
+
+    # Filter out navigation and UI elements
+    name_lower = name.lower()
+    if any(term in name_lower for term in FILTER_TERMS):
+        return False
+
+    # Client names typically:
+    # - Start with uppercase or contain multiple words
+    # - Contain letters (not just numbers/symbols)
+    # - Are longer than typical UI elements
+
+    has_letters = any(c.isalpha() for c in name)
+    reasonable_length = 5 < len(name) < 200
+
+    return has_letters and reasonable_length
+
+def create_client_record(firm_name: str, firm_id: str, client_name: str) -> Dict[str, str]:
+    """Create a standardized client record"""
+    return {
+        'firm_name': firm_name,
+        'firm_id': firm_id,
+        'client_name': client_name,
+        'client_id': None,  # Would need additional lookup
+        'start_date': None,  # Not available in basic listing
+        'end_date': None
+    }

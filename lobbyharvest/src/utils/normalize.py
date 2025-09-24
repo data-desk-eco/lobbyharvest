@@ -1,7 +1,8 @@
+import hashlib
 import re
 from datetime import datetime
 from typing import Dict, List, Optional
-import hashlib
+
 
 def normalize_firm_name(name: str) -> str:
     """Normalize firm names for consistent comparison"""

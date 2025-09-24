@@ -11,7 +11,9 @@ src/scrapers/__init__.py
 src/scrapers/australia_lobbying.py
 src/scrapers/fara.py
 src/scrapers/lobbyfacts.py
+src/scrapers/lobbyfacts_lite.py
 src/scrapers/uk_lobbying.py
 src/utils/__init__.py
 src/utils/browser.py
 src/utils/normalize.py
+tests/test_scrapers.py

@@ -2,12 +2,12 @@
 Lightweight Lobbyfacts scraper using requests and BeautifulSoup
 No browser dependencies required
 """
+import logging
 import re
-from datetime import datetime
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional
+
 import requests
 from bs4 import BeautifulSoup
-import logging
 
 logger = logging.getLogger(__name__)
 
