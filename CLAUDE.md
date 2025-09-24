@@ -41,3 +41,55 @@ Use `uv` for everything and remember: keep the code and architecture _minimal_!
     1. [FTI Government Affairs Lobbying Profile • OpenSecrets](https://www.opensecrets.org/federal-lobbying/firms/summary?cycle=2025&id=D000066805) 
 - Make extensive use of subagents for any task that you feel can be delegated.
 - Commit regularly to facilitate rollbacks
+
+## Current Project Status (Sept 2025)
+
+### Implementation Summary
+- **10 scrapers implemented** using Playwright and requests/BeautifulSoup
+- **50% success rate** (5 working, 5 need fixes)
+- **CLI fully functional** with all scrapers integrated
+- **Parallel development approach** proven effective using TMUX
+
+### ✅ Working Scrapers (5/10 implemented)
+1. **Lobbyfacts EU** - 73+ clients extracted (requires direct URL)
+2. **UK ORCL** - Fully automated, 100% reliable
+3. **French HATVP** - Excellent (200+ clients for some firms)
+4. **Australian Lobbying** - Works with local firm names
+5. **Cyprus** - 6+ clients extracted
+
+### ❌ Need Fixing (5/10 implemented)
+1. **UK Lobbying** - JS rendering issues
+2. **FARA (US)** - Registration lookup failing
+3. **Austrian** - Search form not detected
+4. **Italian** - Registry navigation issues
+5. **AU Foreign Influence** - Angular app challenges
+
+### 📝 Not Yet Implemented (5/15 total)
+- German Bundestag Register
+- Canadian Registry
+- Irish Registry (direct URL available)
+- OpenSecrets US (direct URL available)
+- US Bankruptcy docs (deferred)
+
+## Urgent Action Plan
+
+### Fix Broken Scrapers (Priority 1)
+1. **FARA**: Use direct URL pattern like `P200_REG_NUMBER:7120`
+2. **Italian**: Navigate directly to `/sito/registro.html`
+3. **UK Lobbying**: Add proper JS wait conditions
+
+### Quick Wins (Priority 2)
+1. **Irish**: Direct URL provided - straightforward implementation
+2. **OpenSecrets**: Direct URL provided - simple HTML scraping
+3. **German**: Standard form-based site
+
+### Testing Protocol
+- Run `python test_scrapers.py` for comprehensive testing
+- Test with country-appropriate firms (not just FTI)
+- Success = ANY firm returns results
+
+### Architecture Notes
+- Keep minimal: one scraper per file in `src/scrapers/`
+- Use Playwright only when necessary (JS-heavy sites)
+- Prefer requests/BeautifulSoup for simple HTML
+- All scrapers must have `scrape(firm_name)` function

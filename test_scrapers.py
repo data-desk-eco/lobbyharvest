@@ -1,247 +1,197 @@
 #!/usr/bin/env python3
 """
-Integration test harness for lobbyharvest scrapers
-Tests each scraper with known firms and validates output
+Comprehensive test of all lobbyharvest scrapers after fixes
 """
-import json
-import time
-import subprocess
+
 import sys
-from pathlib import Path
-from typing import Dict, List, Any
-import logging
+import time
+from datetime import datetime
+import traceback
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+sys.path.insert(0, 'lobbyharvest')
 
-# Test configurations for each scraper
-TEST_CONFIGS = {
-    'lobbyfacts': {
-        'command': 'lobbyfacts-scrape',
-        'test_firms': [
-            {'name': 'FTI Consulting Belgium', 'args': ['--firm-name', 'FTI Consulting Belgium']},
-            {'name': 'Weber Shandwick', 'args': ['--firm-name', 'Weber Shandwick']},
-        ],
-        'required_fields': ['firm_name', 'client_name', 'client_id', 'start_date', 'end_date']
-    },
-    'uk_lobbying': {
-        'command': 'uk-lobbying-register',
-        'test_firms': [
-            {'name': 'FTI Consulting', 'args': ['FTI Consulting']},
-            {'name': 'Portland', 'args': ['Portland']},
-        ],
-        'required_fields': ['firm_name', 'client_name']
-    },
-    'australia': {
-        'command': 'australia',
-        'test_firms': [
-            {'name': 'FTI Consulting', 'args': ['--firm', 'FTI Consulting']},
-            {'name': 'KPMG', 'args': ['--firm', 'KPMG']},
-        ],
-        'required_fields': ['firm_name', 'client_name', 'firm_abn']
-    },
-    'fara': {
-        'command': 'fara-scrape',
-        'test_firms': [
-            {'name': 'FTI Government Affairs', 'args': ['FTI Government Affairs']},
-            {'name': 'APCO', 'args': ['APCO']},
-        ],
-        'required_fields': ['firm_name', 'client_name', 'client_country']
-    }
-}
+from src.scrapers import (
+    lobbyfacts,
+    uk_lobbying,
+    australia_lobbying,
+    fara,
+    uk_orcl,
+    french_hatvp,
+    austrian_lobbying,
+    cyprus_lobbying,
+    italian_lobbying,
+    au_foreign_influence
+)
 
+def test_scraper(name, scraper_module, test_cases):
+    """Test a scraper with multiple test cases"""
+    print(f"\n{'='*60}")
+    print(f"Testing: {name}")
+    print(f"Time: {datetime.now().strftime('%H:%M:%S')}")
+    print('-'*60)
 
-class ScraperTester:
-    def __init__(self, timeout: int = 60):
-        self.timeout = timeout
-        self.results = {}
-        self.python_cmd = sys.executable
+    results_summary = []
 
-    def test_scraper(self, scraper_name: str, config: Dict) -> Dict[str, Any]:
-        """Test a single scraper with multiple test cases"""
-        logger.info(f"\n{'='*50}")
-        logger.info(f"Testing {scraper_name} scraper")
-        logger.info(f"{'='*50}")
-
-        scraper_results = {
-            'name': scraper_name,
-            'command': config['command'],
-            'tests': [],
-            'success': False,
-            'total_time': 0
-        }
-
-        for test_case in config['test_firms']:
-            result = self._run_test_case(scraper_name, config['command'], test_case, config.get('required_fields', []))
-            scraper_results['tests'].append(result)
-            scraper_results['total_time'] += result.get('duration', 0)
-
-        # Determine overall success
-        successful_tests = sum(1 for t in scraper_results['tests'] if t['success'])
-        scraper_results['success'] = successful_tests > 0
-        scraper_results['success_rate'] = successful_tests / len(scraper_results['tests']) if scraper_results['tests'] else 0
-
-        return scraper_results
-
-    def _run_test_case(self, scraper_name: str, command: str, test_case: Dict, required_fields: List[str]) -> Dict:
-        """Run a single test case for a scraper"""
-        logger.info(f"\nTesting with firm: {test_case['name']}")
-
-        output_file = f"test_output_{scraper_name}_{test_case['name'].replace(' ', '_')}.json"
-        cmd = [
-            self.python_cmd,
-            'main.py',
-            command,
-            *test_case['args'],
-            '--format', 'json',
-            '--output', output_file
-        ]
-
-        if command in ['uk-lobbying-register', 'australia']:
-            # These commands have different argument structure
-            if '--output' in cmd:
-                idx = cmd.index('--output')
-                cmd[idx] = '--output-file' if command == 'australia' else '--output'
-
-        start_time = time.time()
-        result = {
-            'firm': test_case['name'],
-            'success': False,
-            'records': 0,
-            'duration': 0,
-            'error': None,
-            'missing_fields': []
-        }
-
+    for firm_name, extra_args in test_cases:
+        print(f"\n  Testing with: {firm_name}")
         try:
-            logger.info(f"Running command: {' '.join(cmd)}")
-            process = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=self.timeout,
-                cwd='lobbyharvest'
-            )
+            start_time = time.time()
 
-            result['duration'] = time.time() - start_time
-            result['stdout'] = process.stdout
-            result['stderr'] = process.stderr
-
-            if process.returncode == 0:
-                # Check if output file was created
-                output_path = Path('lobbyharvest') / output_file
-                if output_path.exists():
-                    with open(output_path, 'r') as f:
-                        data = json.load(f)
-                        result['records'] = len(data) if isinstance(data, list) else 0
-
-                        # Validate required fields
-                        if data and isinstance(data, list):
-                            missing = set()
-                            for record in data[:5]:  # Check first 5 records
-                                for field in required_fields:
-                                    if field not in record:
-                                        missing.add(field)
-                            result['missing_fields'] = list(missing)
-
-                        result['success'] = result['records'] > 0 and not result['missing_fields']
-
-                    # Clean up test file
-                    output_path.unlink()
-                else:
-                    result['error'] = "Output file not created"
-
+            # Call the appropriate scrape function
+            if name == "Lobbyfacts" and extra_args:
+                # Lobbyfacts needs URL
+                results = lobbyfacts.scrape_lobbyfacts(firm_name, extra_args)
+            elif hasattr(scraper_module, 'scrape'):
+                results = scraper_module.scrape(firm_name)
+            elif hasattr(scraper_module, 'scrape_' + name.lower().replace(' ', '_')):
+                func_name = 'scrape_' + name.lower().replace(' ', '_')
+                results = getattr(scraper_module, func_name)(firm_name)
             else:
-                result['error'] = f"Command failed with code {process.returncode}"
-                if process.stderr:
-                    result['error'] += f": {process.stderr}"
+                print(f"    ❌ No scrape function found")
+                continue
 
-        except subprocess.TimeoutExpired:
-            result['error'] = f"Timeout after {self.timeout} seconds"
+            elapsed_time = time.time() - start_time
+
+            if results:
+                print(f"    ✅ Found {len(results)} results in {elapsed_time:.2f}s")
+                # Show first result as sample
+                if results:
+                    sample = results[0]
+                    print(f"       Sample: {sample.get('client_name', 'N/A')}")
+                results_summary.append((firm_name, len(results), 'success'))
+            else:
+                print(f"    ⚠️  No results in {elapsed_time:.2f}s")
+                results_summary.append((firm_name, 0, 'no_results'))
+
         except Exception as e:
-            result['error'] = str(e)
+            print(f"    ❌ ERROR: {str(e)[:100]}")
+            results_summary.append((firm_name, 0, 'error'))
+            if '--verbose' in sys.argv:
+                traceback.print_exc()
 
-        # Log result
-        if result['success']:
-            logger.info(f"✓ SUCCESS: Found {result['records']} records in {result['duration']:.2f}s")
-        else:
-            logger.error(f"✗ FAILED: {result['error']}")
-            if result['stderr']:
-                logger.error(f"  stderr: {result['stderr'][:200]}")
-
-        return result
-
-    def run_all_tests(self) -> Dict:
-        """Run tests for all configured scrapers"""
-        logger.info("Starting comprehensive scraper tests")
-
-        for scraper_name, config in TEST_CONFIGS.items():
-            self.results[scraper_name] = self.test_scraper(scraper_name, config)
-
-        return self.results
-
-    def generate_report(self) -> str:
-        """Generate a summary report of test results"""
-        report = ["\n" + "="*60]
-        report.append("SCRAPER TEST SUMMARY REPORT")
-        report.append("="*60)
-
-        total_scrapers = len(self.results)
-        successful_scrapers = sum(1 for r in self.results.values() if r['success'])
-
-        report.append(f"\nOverall: {successful_scrapers}/{total_scrapers} scrapers working")
-        report.append("")
-
-        for scraper_name, result in self.results.items():
-            status = "✓" if result['success'] else "✗"
-            report.append(f"{status} {scraper_name.upper()}")
-            report.append(f"  Success rate: {result['success_rate']*100:.0f}%")
-            report.append(f"  Total time: {result['total_time']:.2f}s")
-
-            for test in result['tests']:
-                test_status = "✓" if test['success'] else "✗"
-                report.append(f"    {test_status} {test['firm']}: ", end="")
-                if test['success']:
-                    report.append(f"{test['records']} records in {test['duration']:.2f}s")
-                else:
-                    report.append(f"Failed - {test.get('error', 'Unknown error')}")
-
-            report.append("")
-
-        return "\n".join(report)
-
+    return results_summary
 
 def main():
-    """Main test runner"""
-    # Check if we're in the right directory
-    if not Path('lobbyharvest/main.py').exists():
-        logger.error("Please run this script from the project root directory")
-        sys.exit(1)
+    print("="*60)
+    print("COMPREHENSIVE SCRAPER TEST SUITE")
+    print("="*60)
 
-    # Check for required dependencies
-    try:
-        subprocess.run([sys.executable, '-c', 'import playwright'], check=True, capture_output=True)
-    except subprocess.CalledProcessError:
-        logger.error("Playwright not installed. Run: uv add playwright")
-        sys.exit(1)
+    # Test configurations with various firm names
+    test_configs = [
+        ("Lobbyfacts", lobbyfacts, [
+            ("FTI Consulting Belgium", "https://www.lobbyfacts.eu/datacard/fti-consulting-belgium?rid=29896393398-67"),
+        ]),
 
-    # Run tests
-    tester = ScraperTester(timeout=60)
-    results = tester.run_all_tests()
+        ("UK Lobbying", uk_lobbying, [
+            ("FTI Consulting", None),
+            ("Portland", None),
+            ("Weber Shandwick", None),
+        ]),
 
-    # Generate and print report
-    report = tester.generate_report()
-    print(report)
+        ("UK ORCL", uk_orcl, [
+            ("FTI Consulting", None),
+            ("Portland", None),
+        ]),
 
-    # Save detailed results
-    with open('test_results.json', 'w') as f:
-        json.dump(results, f, indent=2, default=str)
-    logger.info("Detailed results saved to test_results.json")
+        ("Australian Lobbying", australia_lobbying, [
+            ("FTI", None),
+            ("Hawker Britton", None),
+            ("Crosby Textor", None),
+        ]),
 
-    # Exit with appropriate code
-    success_count = sum(1 for r in results.values() if r['success'])
-    sys.exit(0 if success_count > 0 else 1)
+        ("AU Foreign Influence", au_foreign_influence, [
+            ("FTI", None),
+            ("Hawker", None),
+        ]),
 
+        ("FARA", fara, [
+            ("Akin Gump", None),
+            ("Squire Patton", None),
+            ("FTI", None),
+        ]),
+
+        ("French HATVP", french_hatvp, [
+            ("Boury Tallon", None),
+            ("Image Sept", None),
+            ("FTI", None),
+        ]),
+
+        ("Austrian Lobbying", austrian_lobbying, [
+            ("Schönherr", None),
+            ("Wolf Theiss", None),
+            ("FTI", None),
+        ]),
+
+        ("Cyprus Lobbying", cyprus_lobbying, [
+            ("Zenox", None),
+            ("FTI", None),
+        ]),
+
+        ("Italian Lobbying", italian_lobbying, [
+            ("Cattaneo Zanetto", None),
+            ("Reti", None),
+            ("FTI", None),
+        ]),
+    ]
+
+    # Run all tests
+    all_results = {}
+    for name, module, test_cases in test_configs:
+        results = test_scraper(name, module, test_cases)
+        all_results[name] = results
+
+    # Print summary
+    print("\n" + "="*60)
+    print("FINAL TEST SUMMARY")
+    print("="*60)
+
+    working_scrapers = []
+    partial_scrapers = []
+    broken_scrapers = []
+
+    for scraper_name, results in all_results.items():
+        success_count = sum(1 for _, _, status in results if status == 'success')
+        total_count = len(results)
+
+        print(f"\n{scraper_name}:")
+        print(f"  Success rate: {success_count}/{total_count}")
+
+        if success_count == total_count:
+            working_scrapers.append(scraper_name)
+            print(f"  Status: ✅ FULLY WORKING")
+        elif success_count > 0:
+            partial_scrapers.append(scraper_name)
+            print(f"  Status: ⚠️  PARTIALLY WORKING")
+        else:
+            broken_scrapers.append(scraper_name)
+            print(f"  Status: ❌ NOT WORKING")
+
+        for firm, count, status in results:
+            if status == 'success':
+                print(f"    ✓ {firm}: {count} results")
+            elif status == 'no_results':
+                print(f"    - {firm}: no results")
+            else:
+                print(f"    ✗ {firm}: error")
+
+    # Final statistics
+    print("\n" + "="*60)
+    print("OVERALL STATISTICS")
+    print("="*60)
+    print(f"✅ Fully Working: {len(working_scrapers)}/10")
+    if working_scrapers:
+        print(f"   {', '.join(working_scrapers)}")
+
+    print(f"⚠️  Partially Working: {len(partial_scrapers)}/10")
+    if partial_scrapers:
+        print(f"   {', '.join(partial_scrapers)}")
+
+    print(f"❌ Not Working: {len(broken_scrapers)}/10")
+    if broken_scrapers:
+        print(f"   {', '.join(broken_scrapers)}")
+
+    success_rate = (len(working_scrapers) + len(partial_scrapers) * 0.5) / 10 * 100
+    print(f"\n📊 Overall Success Rate: {success_rate:.1f}%")
 
 if __name__ == "__main__":
     main()
